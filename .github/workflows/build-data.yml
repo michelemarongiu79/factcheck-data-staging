@@ -37,6 +37,14 @@ jobs:
             sleep 3
           done
 
+      - name: Cache dati grezzi Open-Meteo (persiste tra i tentativi)
+        uses: actions/cache@v4
+        with:
+          path: data/raw/temp_daily
+          key: openmeteo-raw-${{ github.run_id }}
+          restore-keys: |
+            openmeteo-raw-
+
       - name: Temperature + precipitazioni (Open-Meteo)
         run: python scripts/build_temperature.py
         continue-on-error: true
