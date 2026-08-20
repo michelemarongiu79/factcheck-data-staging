@@ -1,0 +1,54 @@
+name: Costruisci dati (staging pubblico)
+
+# Repo pubblico "ponte": fa girare le pipeline dati pesanti di FactCheck a
+# costo zero (Actions gratuite/illimitate sui repo pubblici). I JSON
+# verificati vengono poi copiati a mano nel repo privato factcheck.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installa dipendenze
+        run: pip install -r requirements.txt
+
+      - name: Storico carburanti per regione (riprende dal progresso salvato)
+        run: python scripts/build_carburanti_regioni.py
+
+      - name: Committa il progresso carburanti (se cambiato)
+        run: |
+          git config user.name "dati-bot"
+          git config user.email "actions@github.com"
+          git add site/data/carburanti_regioni.json data/carburanti_regioni_progress.json
+          git diff --staged --quiet || git commit -m "Avanza storico carburanti per regione"
+          for i in 1 2 3 4 5; do
+            git push && break
+            git pull --rebase -q
+            sleep 3
+          done
+
+      - name: Temperature + precipitazioni (Open-Meteo)
+        run: python scripts/build_temperature.py
+        continue-on-error: true
+
+      - name: Committa temperature+precipitazioni (se cambiati)
+        run: |
+          git config user.name "dati-bot"
+          git config user.email "actions@github.com"
+          git add site/data/temperature_regioni.json site/data/precipitazioni_regioni.json
+          git diff --staged --quiet || git commit -m "Aggiorna temperature e precipitazioni"
+          for i in 1 2 3 4 5; do
+            git push && break
+            git pull --rebase -q
+            sleep 3
+          done
