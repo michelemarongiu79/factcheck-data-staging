@@ -100,7 +100,10 @@ def daily_cache(nome: str, lat: float, lon: float) -> dict:
 def mensili_da_daily(daily: dict) -> dict:
     """Deriva {chiave: {anno(str): [12 valori]}} dai dati giornalieri grezzi, una
     chiave per ogni voce di SERIE_MENSILI (media/max/min temperatura, media/picco
-    precipitazione)."""
+    precipitazione). Per le chiavi con aggregazione max/min salva anche il GIORNO
+    esatto in cui si e' verificato il valore, sotto '<chiave>_giorno' (stessa forma,
+    ma stringhe YYYY-MM-DD invece di numeri) — permette di rispondere a "quando
+    esattamente e' successo il picco?" cliccando sul grafico."""
     df = pd.DataFrame({"date": pd.to_datetime(daily["time"])})
     for var in VARIABILI:
         df[var] = daily[var]
@@ -108,11 +111,20 @@ def mensili_da_daily(daily: dict) -> dict:
     df["m"] = df["date"].dt.month
     out = {}
     for chiave, (var_grezza, agg) in SERIE_MENSILI.items():
-        g = df.dropna(subset=[var_grezza]).groupby(["y", "m"])[var_grezza].agg(agg)
+        sotto = df.dropna(subset=[var_grezza])
+        g = sotto.groupby(["y", "m"])[var_grezza].agg(agg)
         per_anno: dict[str, list] = {}
         for (y, m), v in g.items():
             per_anno.setdefault(str(int(y)), [None] * 12)[int(m) - 1] = round(float(v), 2)
         out[chiave] = per_anno
+
+        if agg in ("max", "min"):
+            idx_fn = "idxmax" if agg == "max" else "idxmin"
+            gi = sotto.groupby(["y", "m"])[var_grezza].agg(idx_fn)
+            giorni: dict[str, list] = {}
+            for (y, m), riga in gi.items():
+                giorni.setdefault(str(int(y)), [None] * 12)[int(m) - 1] = sotto.loc[riga, "date"].strftime("%Y-%m-%d")
+            out[chiave + "_giorno"] = giorni
     return out
 
 
@@ -147,16 +159,24 @@ def main() -> int:
     return 0
 
 
-def _serie_regioni(risultati: dict, anni: list, chiavi: dict) -> list:
+def _serie_regioni(risultati: dict, anni: list, chiavi: dict, chiavi_giorno: dict | None = None) -> list:
     """Costruisce l'array 'serie' (una voce per regione) leggendo da risultati[nome]
-    solo le chiavi indicate. chiavi = {chiave_pubblica: chiave_in_risultati}."""
+    solo le chiavi indicate. chiavi = {chiave_pubblica: chiave_in_risultati}.
+    chiavi_giorno (opzionale) = stesse chiavi pubbliche ma per il giorno esatto del
+    picco (solo per le varianti con aggregazione max/min, vedi mensili_da_daily)."""
     serie = []
     for nome, lat, lon, colore in REGIONI:
         if nome not in risultati:
             continue   # regione non ancora disponibile (anteprima parziale)
         data = risultati[nome]
         mensili = {pub: [data[interna].get(str(a), [None] * 12) for a in anni] for pub, interna in chiavi.items()}
-        serie.append({"key": nome, "label": nome, "colore": colore, "mensili": mensili})
+        voce = {"key": nome, "label": nome, "colore": colore, "mensili": mensili}
+        if chiavi_giorno:
+            voce["mensili_giorni"] = {
+                pub: [data[interna + "_giorno"].get(str(a), [None] * 12) for a in anni]
+                for pub, interna in chiavi_giorno.items()
+            }
+        serie.append(voce)
     return serie
 
 
@@ -166,7 +186,8 @@ def scrivi(risultati: dict, anni: list) -> None:
 
 
 def scrivi_temperature(risultati: dict, anni: list) -> None:
-    serie = _serie_regioni(risultati, anni, {"media": "media", "max": "max", "min": "min"})
+    serie = _serie_regioni(risultati, anni, {"media": "media", "max": "max", "min": "min"},
+                            chiavi_giorno={"max": "max", "min": "min"})
 
     meta = {
         "id": "temperature",
@@ -190,8 +211,8 @@ def scrivi_temperature(risultati: dict, anni: list) -> None:
         "mappa": "regioni_italia", "mesi": True,
         # agg = come si combinano i mesi selezionati: media=media, max=picco, min=minimo
         "varianti": [{"key": "media", "label": "Media", "agg": "mean"},
-                     {"key": "max", "label": "Massima (picco)", "agg": "max"},
-                     {"key": "min", "label": "Minima", "agg": "min"}],
+                     {"key": "max", "label": "Massima (picco)", "agg": "max", "cerca": "ondata di caldo"},
+                     {"key": "min", "label": "Minima", "agg": "min", "cerca": "gelo ondata di freddo"}],
         "variante_default": "media", "caption": {"tipo": "media_trend"},
         "contesto": {
             "titolo": "Perché l'andamento non è lineare (1940-2024)",
@@ -230,7 +251,8 @@ def scrivi_temperature(risultati: dict, anni: list) -> None:
 
 
 def scrivi_precipitazioni(risultati: dict, anni: list) -> None:
-    serie = _serie_regioni(risultati, anni, {"media": "precip_media", "picco": "precip_picco"})
+    serie = _serie_regioni(risultati, anni, {"media": "precip_media", "picco": "precip_picco"},
+                            chiavi_giorno={"picco": "precip_picco"})
 
     meta = {
         "id": "precipitazioni",
@@ -256,7 +278,8 @@ def scrivi_precipitazioni(risultati: dict, anni: list) -> None:
         "periodo_default": 0, "decimali": 1, "legenda_verticale": True,
         "mappa": "regioni_italia", "mesi": True,
         "varianti": [{"key": "media", "label": "Media giornaliera", "agg": "mean"},
-                     {"key": "picco", "label": "Picco (giorno più piovoso)", "agg": "max"}],
+                     {"key": "picco", "label": "Picco (giorno più piovoso)", "agg": "max",
+                      "cerca": "alluvione nubifragio maltempo"}],
         "variante_default": "media", "caption": {"tipo": "precip_estremi"},
     }
     payload = {"meta": meta, "config": config,
